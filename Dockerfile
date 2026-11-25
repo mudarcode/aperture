@@ -7,11 +7,12 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN go build -trimpath -ldflags="-s -w" -o /out/aperture ./cmd/aperture \
- && go build -trimpath -ldflags="-s -w" -o /out/tracegen ./cmd/tracegen
+ && go build -trimpath -ldflags="-s -w" -o /out/tracegen ./cmd/tracegen \
+ && go build -trimpath -ldflags="-s -w" -o /out/demo ./cmd/demo
 
 FROM alpine:3.24
 RUN addgroup -S aperture && adduser -S -G aperture -H aperture
-COPY --from=build /out/aperture /out/tracegen /usr/local/bin/
+COPY --from=build /out/aperture /out/tracegen /out/demo /usr/local/bin/
 USER aperture
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \

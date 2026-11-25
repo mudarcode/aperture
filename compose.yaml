@@ -2,6 +2,23 @@
 # all ports bind to 127.0.0.1.
 name: aperture
 
+x-demo: &demo
+  build: .
+  entrypoint: ["/usr/local/bin/demo"]
+  command: []
+  healthcheck:
+    test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+  depends_on:
+    collector:
+      condition: service_started
+
+x-demo-env: &demo-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4317
+  OTEL_EXPORTER_OTLP_INSECURE: "true"
+
 services:
   postgres:
     image: postgres:18.7-alpine
@@ -42,6 +59,58 @@ services:
       - "127.0.0.1:4318:4318"
     depends_on:
       aperture:
+        condition: service_healthy
+
+  # ---- Demo shop: instrumented microservices + simulated users ----
+  gateway:
+    <<: *demo
+    environment:
+      <<: *demo-env
+      DEMO_ROLE: gateway
+      CATALOG_URL: http://catalog:8080
+      CHECKOUT_URL: http://checkout:8080
+    ports:
+      - "127.0.0.1:9000:8080"
+  catalog:
+    <<: *demo
+    environment:
+      <<: *demo-env
+      DEMO_ROLE: catalog
+      FAULT_SLOW_RATE: "0.03"
+      FAULT_SLOW_MS: "250"
+  checkout:
+    <<: *demo
+    environment:
+      <<: *demo-env
+      DEMO_ROLE: checkout
+      CATALOG_URL: http://catalog:8080
+      INVENTORY_URL: http://inventory:8080
+      PAYMENTS_URL: http://payments:8080
+  inventory:
+    <<: *demo
+    environment:
+      <<: *demo-env
+      DEMO_ROLE: inventory
+      FAULT_ERROR_RATE: "0.01"
+  payments:
+    <<: *demo
+    environment:
+      <<: *demo-env
+      DEMO_ROLE: payments
+      FAULT_ERROR_RATE: "0.05"
+      FAULT_SLOW_RATE: "0.05"
+      FAULT_SLOW_MS: "400"
+  traffic:
+    <<: *demo
+    environment:
+      <<: *demo-env
+      DEMO_ROLE: traffic
+      GATEWAY_URL: http://gateway:8080
+      TRAFFIC_RPS: "5"
+    healthcheck:
+      disable: true
+    depends_on:
+      gateway:
         condition: service_healthy
 
 volumes:
