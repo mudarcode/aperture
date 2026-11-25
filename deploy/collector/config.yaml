@@ -1,0 +1,50 @@
+# OpenTelemetry Collector: receives OTLP from instrumented services and
+# forwards it to Aperture over OTLP/HTTP (binary protobuf, gzip).
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  batch:
+    send_batch_size: 1024
+    send_batch_max_size: 4096 # stays under APERTURE_MAX_SPANS_PER_REQUEST
+    timeout: 200ms
+
+exporters:
+  otlp_http/aperture:
+    traces_endpoint: http://aperture:8080/v1/traces
+    encoding: proto
+    compression: gzip
+    timeout: 20s # longer than APERTURE_ACK_TIMEOUT so Aperture answers first
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 5m
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/aperture]

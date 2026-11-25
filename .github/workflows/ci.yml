@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Go lint and test
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18.7-alpine
+        env:
+          POSTGRES_USER: aperture
+          POSTGRES_PASSWORD: aperture
+          POSTGRES_DB: aperture
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aperture" --health-interval 2s
+          --health-timeout 3s --health-retries 30
+    env:
+      APERTURE_TEST_DATABASE_URL: postgres://aperture:aperture@localhost:5432/aperture?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: go vet
+        run: go vet ./...
+      - name: go mod tidy is clean
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+      - name: test (race, with PostgreSQL)
+        run: go test -race -count=1 ./...
+
+  compose-smoke:
+    name: Compose end-to-end smoke test
+    runs-on: ubuntu-24.04
+    needs: backend
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: Start stack
+        run: docker compose up -d --build --wait --wait-timeout 180
+      - name: Send traces through the Collector
+        run: go run ./cmd/tracegen -endpoint http://localhost:4318 -traces 100
+      - name: Verify traces were stored
+        run: |
+          for i in $(seq 1 30); do
+            n=$(docker compose exec -T postgres psql -U aperture -tAc "select count(distinct trace_id) from spans")
+            [ "$n" = "100" ] && echo "stored $n traces" && exit 0
+            sleep 1
+          done
+          echo "expected 100 traces, found $n"; docker compose logs; exit 1
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs
+      - name: Tear down
+        if: always()
+        run: docker compose down --volumes

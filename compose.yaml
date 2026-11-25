@@ -1,0 +1,48 @@
+# Local development stack. Credentials below are for local demo use only;
+# all ports bind to 127.0.0.1.
+name: aperture
+
+services:
+  postgres:
+    image: postgres:18.7-alpine
+    environment:
+      POSTGRES_USER: aperture
+      POSTGRES_PASSWORD: aperture
+      POSTGRES_DB: aperture
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aperture -d aperture"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  aperture:
+    build: .
+    environment:
+      APERTURE_DATABASE_URL: postgres://aperture:aperture@postgres:5432/aperture?sslmode=disable
+      APERTURE_HTTP_ADDR: ":8080"
+      APERTURE_LOG_LEVEL: info
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 40s
+
+  collector:
+    image: otel/opentelemetry-collector:0.165.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deploy/collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    depends_on:
+      aperture:
+        condition: service_healthy
+
+volumes:
+  pgdata:
