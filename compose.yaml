@@ -18,6 +18,7 @@ x-demo: &demo
 x-demo-env: &demo-env
   OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4317
   OTEL_EXPORTER_OTLP_INSECURE: "true"
+  OTEL_BSP_SCHEDULE_DELAY: "1000" # export every second so traces appear quickly
 
 services:
   postgres:
@@ -60,6 +61,21 @@ services:
     depends_on:
       aperture:
         condition: service_healthy
+
+  web:
+    build: ./web
+    environment:
+      APERTURE_API_URL: http://aperture:8080
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      aperture:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/services"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   # ---- Demo shop: instrumented microservices + simulated users ----
   gateway:

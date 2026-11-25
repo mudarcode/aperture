@@ -43,27 +43,65 @@ jobs:
       - name: test (race, with PostgreSQL)
         run: go test -race -count=1 ./...
 
-  compose-smoke:
-    name: Compose end-to-end smoke test
+  web:
+    name: Web lint, typecheck, test, build
     runs-on: ubuntu-24.04
-    needs: backend
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24.22.3
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  compose-e2e:
+    name: Full stack end-to-end
+    runs-on: ubuntu-24.04
+    needs: [backend, web]
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24.22.3
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - name: Start stack
         run: docker compose up -d --build --wait --wait-timeout 180
       - name: Send traces through the Collector
-        run: go run ./cmd/tracegen -endpoint http://localhost:4318 -traces 100
-      - name: Verify traces were stored
+        run: go run ./cmd/tracegen -endpoint http://localhost:4318 -traces 100 -services tg-frontend,tg-checkout,tg-db
+      - name: Verify tracegen traces were stored
         run: |
           for i in $(seq 1 30); do
-            n=$(docker compose exec -T postgres psql -U aperture -tAc "select count(distinct trace_id) from spans")
+            n=$(docker compose exec -T postgres psql -U aperture -tAc "select count(*) from traces where root_service_name = 'tg-frontend'")
             [ "$n" = "100" ] && echo "stored $n traces" && exit 0
             sleep 1
           done
-          echo "expected 100 traces, found $n"; docker compose logs; exit 1
+          echo "expected 100 traces, found $n"; exit 1
+      - name: Let the demo shop generate traffic
+        run: sleep 30
+      - name: Install Playwright
+        working-directory: web
+        run: npm ci && npx playwright install --with-deps chromium
+      - name: Browser end-to-end tests
+        working-directory: web
+        run: npx playwright test
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: playwright-report
+          path: web/playwright-report
       - name: Logs on failure
         if: failure()
         run: docker compose logs
