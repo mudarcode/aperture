@@ -25,8 +25,13 @@ type Readiness struct {
 //	GET  /healthz    liveness: the process is running
 //	GET  /readyz     readiness: database reachable and pipeline accepting
 //	GET  /metrics    Prometheus metrics
-func NewMux(ingest http.Handler, ready Readiness, m *metrics.Metrics) *http.ServeMux {
+//
+// extra registers additional routes (the query API).
+func NewMux(ingest http.Handler, ready Readiness, m *metrics.Metrics, extra ...func(*http.ServeMux)) *http.ServeMux {
 	mux := http.NewServeMux()
+	for _, register := range extra {
+		register(mux)
+	}
 	// Registered without a method so the handler can answer 405 with an
 	// OTLP-style Status body.
 	mux.Handle(otlpingest.TracesPath, ingest)

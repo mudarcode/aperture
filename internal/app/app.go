@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/mudarcode/aperture/internal/api"
 	"github.com/mudarcode/aperture/internal/config"
 	"github.com/mudarcode/aperture/internal/metrics"
 	"github.com/mudarcode/aperture/internal/otlpingest"
@@ -33,6 +34,7 @@ func New(cfg config.Config, store *postgres.Store, log *slog.Logger) (*App, erro
 	pl.Start()
 	ingest := otlpingest.NewHandler(cfg.Handler, &otlpingest.Converter{Limits: cfg.Limits}, pl, m,
 		log.With("component", "otlp"))
-	mux := server.NewMux(ingest, server.Readiness{Accepting: pl.Accepting, PingDB: store.Ping}, m)
+	queryAPI := api.New(store, log.With("component", "api"))
+	mux := server.NewMux(ingest, server.Readiness{Accepting: pl.Accepting, PingDB: store.Ping}, m, queryAPI.Register)
 	return &App{Handler: mux, Pipeline: pl, Metrics: m}, nil
 }

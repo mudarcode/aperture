@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -74,34 +73,75 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// insertSQL inserts a whole batch with a single statement using parallel
-// arrays + unnest, which avoids PostgreSQL's 65535 bind-parameter limit and
-// costs one round trip regardless of batch size. ON CONFLICT DO NOTHING makes
-// client retries idempotent.
+// insertSQL writes a whole batch with a single statement:
+//
+//  1. input: parallel arrays expanded with unnest. One round trip regardless
+//     of batch size, and no 65,535 bind-parameter limit.
+//  2. ins:   insert spans; ON CONFLICT DO NOTHING makes client retries
+//     idempotent, and RETURNING yields only spans that are actually new.
+//  3. agg:   fold the new spans into per-trace deltas.
+//  4. upsert the traces summary table with those deltas.
+//
+// Rows are processed in trace_id order so concurrent batches acquire row
+// locks in a consistent order.
 const insertSQL = `
-INSERT INTO spans (
-    trace_id, span_id, parent_span_id, trace_state, service_name, name, kind,
-    start_time_unix_nano, end_time_unix_nano, status_code, status_message,
-    scope_name, scope_version, resource_attributes, attributes, events, links,
-    dropped_attributes_count, dropped_events_count, dropped_links_count
+WITH input AS (
+    SELECT * FROM unnest(
+        $1::bytea[], $2::bytea[], $3::bytea[], $4::text[], $5::text[], $6::text[], $7::smallint[],
+        $8::bigint[], $9::bigint[], $10::smallint[], $11::text[],
+        $12::text[], $13::text[], $14::text[], $15::text[], $16::text[], $17::text[],
+        $18::integer[], $19::integer[], $20::integer[]
+    ) AS t(trace_id, span_id, parent_span_id, trace_state, service_name, name, kind,
+           start_ns, end_ns, status_code, status_message,
+           scope_name, scope_version, resource_attributes, attributes, events, links,
+           dropped_attributes, dropped_events, dropped_links)
+),
+ins AS (
+    INSERT INTO spans (
+        trace_id, span_id, parent_span_id, trace_state, service_name, name, kind,
+        start_time_unix_nano, end_time_unix_nano, status_code, status_message,
+        scope_name, scope_version, resource_attributes, attributes, events, links,
+        dropped_attributes_count, dropped_events_count, dropped_links_count
+    )
+    SELECT trace_id, span_id, parent_span_id, trace_state, service_name, name, kind,
+           start_ns, end_ns, status_code, status_message,
+           scope_name, scope_version, resource_attributes::jsonb, attributes::jsonb,
+           events::jsonb, links::jsonb,
+           dropped_attributes, dropped_events, dropped_links
+    FROM input
+    ORDER BY trace_id, span_id
+    ON CONFLICT (trace_id, span_id) DO NOTHING
+    RETURNING trace_id, parent_span_id, service_name, name, start_time_unix_nano,
+              end_time_unix_nano, status_code
+),
+agg AS (
+    SELECT trace_id,
+           min(start_time_unix_nano) AS start_ns,
+           max(end_time_unix_nano)   AS end_ns,
+           count(*)                  AS span_count,
+           count(*) FILTER (WHERE status_code = 2) AS error_count,
+           array_agg(DISTINCT service_name ORDER BY service_name) AS services,
+           (array_agg(service_name ORDER BY start_time_unix_nano) FILTER (WHERE parent_span_id IS NULL))[1] AS root_service,
+           (array_agg(name ORDER BY start_time_unix_nano) FILTER (WHERE parent_span_id IS NULL))[1] AS root_name
+    FROM ins
+    GROUP BY trace_id
 )
-SELECT t.trace_id, t.span_id, t.parent_span_id, t.trace_state, t.service_name, t.name, t.kind,
-       t.start_ns, t.end_ns, t.status_code, t.status_message,
-       t.scope_name, t.scope_version, t.resource_attributes::jsonb, t.attributes::jsonb,
-       t.events::jsonb, t.links::jsonb,
-       t.dropped_attributes, t.dropped_events, t.dropped_links
-FROM unnest(
-    $1::bytea[], $2::bytea[], $3::bytea[], $4::text[], $5::text[], $6::text[], $7::smallint[],
-    $8::bigint[], $9::bigint[], $10::smallint[], $11::text[],
-    $12::text[], $13::text[], $14::text[], $15::text[], $16::text[], $17::text[],
-    $18::integer[], $19::integer[], $20::integer[]
-) AS t(trace_id, span_id, parent_span_id, trace_state, service_name, name, kind,
-       start_ns, end_ns, status_code, status_message,
-       scope_name, scope_version, resource_attributes, attributes, events, links,
-       dropped_attributes, dropped_events, dropped_links)
-ON CONFLICT (trace_id, span_id) DO NOTHING`
+INSERT INTO traces (trace_id, start_time_unix_nano, end_time_unix_nano, span_count, error_count,
+                    services, root_service_name, root_span_name)
+SELECT trace_id, start_ns, end_ns, span_count, error_count, services, root_service, root_name
+FROM agg
+ORDER BY trace_id
+ON CONFLICT (trace_id) DO UPDATE SET
+    start_time_unix_nano = LEAST(traces.start_time_unix_nano, EXCLUDED.start_time_unix_nano),
+    end_time_unix_nano   = GREATEST(traces.end_time_unix_nano, EXCLUDED.end_time_unix_nano),
+    span_count           = traces.span_count + EXCLUDED.span_count,
+    error_count          = traces.error_count + EXCLUDED.error_count,
+    services             = ARRAY(SELECT DISTINCT s FROM unnest(traces.services || EXCLUDED.services) AS s ORDER BY s),
+    root_service_name    = COALESCE(traces.root_service_name, EXCLUDED.root_service_name),
+    root_span_name       = COALESCE(traces.root_span_name, EXCLUDED.root_span_name),
+    updated_at           = now()`
 
-// WriteSpans inserts spans in one transaction. It implements pipeline.Writer.
+// WriteSpans inserts spans and updates trace summaries in one statement. It implements pipeline.Writer.
 // Data errors (SQLSTATE classes 22 and 23) are wrapped with
 // pipeline.ErrPermanent because retrying identical data cannot succeed.
 func (s *Store) WriteSpans(ctx context.Context, spans []model.Span) error {
@@ -141,14 +181,13 @@ func (s *Store) WriteSpans(ctx context.Context, spans []model.Span) error {
 		droppedLinks[i] = clampInt32(sp.DroppedLinksCount)
 	}
 
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, insertSQL,
-			traceIDs, spanIDs, parentIDs, traceStates, services, names, kinds,
-			starts, ends, statusCodes, statusMsgs,
-			scopeNames, scopeVersions, resAttrs, attrs, events, links,
-			droppedAttrs, droppedEvents, droppedLinks)
-		return err
-	})
+	// A single statement is atomic on its own, so no explicit transaction is
+	// needed: spans and the trace summary commit together or not at all.
+	_, err := s.pool.Exec(ctx, insertSQL,
+		traceIDs, spanIDs, parentIDs, traceStates, services, names, kinds,
+		starts, ends, statusCodes, statusMsgs,
+		scopeNames, scopeVersions, resAttrs, attrs, events, links,
+		droppedAttrs, droppedEvents, droppedLinks)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && len(pgErr.Code) == 5 && (pgErr.Code[:2] == "22" || pgErr.Code[:2] == "23") {
