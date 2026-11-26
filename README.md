@@ -1,27 +1,51 @@
 # Aperture
 
-Aperture is a distributed tracing backend. It ingests standard OpenTelemetry
-traces over OTLP/HTTP, processes them through a bounded concurrent pipeline,
-stores them in PostgreSQL, and (in progress) serves a web UI for diagnosing
-latency and failures across microservices.
+Aperture is a distributed tracing backend and UI. It ingests standard
+OpenTelemetry traces over OTLP/HTTP and pushes them through a bounded,
+batching pipeline. It acknowledges spans only after they are committed to
+PostgreSQL, and serves a web UI for finding where requests got slow or failed
+across microservices.
 
-> Status: under active development. The ingestion slice (OTLP → pipeline →
-> PostgreSQL, with Collector and Compose) is complete and tested. The query
-> API, web UI, demo services, and benchmarks are being built next.
+![Trace waterfall with critical path and root-cause error](docs/screenshots/trace-waterfall.png)
 
 ## Quick start
 
-Requirements: Docker with Compose v2, and Go 1.27+ for the trace generator.
+Requirements: Docker with Compose v2. Go 1.27+ is needed only for the trace
+generator and benchmarks.
 
 ```sh
-docker compose up -d --build --wait          # PostgreSQL, Aperture, OTel Collector
-go run ./cmd/tracegen -traces 100            # send traces through the Collector
-docker compose exec postgres psql -U aperture -c \
-  "select service_name, count(*) from spans group by 1"
+docker compose up -d --build --wait
 ```
 
-Endpoints on `localhost:8080`: `POST /v1/traces` (OTLP/HTTP protobuf),
-`GET /healthz`, `GET /readyz`, `GET /metrics`.
+This starts PostgreSQL, Aperture, an OpenTelemetry Collector, the web UI, and
+a small instrumented shop: five Go services plus a traffic generator that
+injects realistic latency and failures. Within a few seconds traces show up
+at **http://localhost:3000**.
+
+| URL | What |
+|---|---|
+| http://localhost:3000 | Web UI: services, traces, trace waterfall, dependency graph |
+| http://localhost:8080/v1/traces | OTLP/HTTP protobuf ingestion (direct) |
+| localhost:4317 / localhost:4318 | Collector OTLP gRPC / HTTP (point your own apps here) |
+| http://localhost:8080/api/v1/… | JSON query API |
+| http://localhost:8080/metrics | Prometheus metrics; `/healthz`, `/readyz` probes |
+
+To send synthetic traces as well: `go run ./cmd/tracegen -traces 100`.
+To make the demo misbehave, see [docs/demo.md](docs/demo.md).
+
+## What you can do in the UI
+
+| | |
+|---|---|
+| ![Services](docs/screenshots/services.png) | **Services:** request rate, error rate and p50/p95/p99 for every service, computed from entry spans only. |
+| ![Service detail](docs/screenshots/service-detail.png) | **Service detail:** RED time series and per-operation stats. |
+| ![Traces](docs/screenshots/traces.png) | **Trace search:** filter by service, operation, errors and duration; scatter plot of duration over time; keyset pagination. |
+| ![Dependencies](docs/screenshots/dependencies.png) | **Dependency graph:** service-to-service calls with volume, error rate and p95 per edge. |
+
+The trace view shows a collapsible waterfall, the critical path, and self time
+per service. One click jumps to the deepest failed span (the likely root
+cause). Every view has a dark mode, keyboard navigation and visible focus,
+and errors are never signalled by color alone.
 
 ## Design highlights
 
@@ -35,14 +59,20 @@ Endpoints on `localhost:8080`: `POST /v1/traces` (OTLP/HTTP protobuf),
 * **Bounded, batched pipeline.** A fixed-size queue sheds load with `503` +
   `Retry-After` instead of growing memory; workers coalesce requests into
   single-statement `unnest` inserts.
+* **Measured.** Reproducible load tests with a durability check after every
+  run, and a profile-guided optimization reported with both its
+  microbenchmark win and its end-to-end effect. See
+  [docs/benchmarks.md](docs/benchmarks.md).
 * **Operable.** Liveness/readiness probes, Prometheus metrics for every stage,
   structured JSON logs, graceful shutdown that drains in-flight work.
 
 ## Development
 
 ```sh
-make up      # start the stack
-make test    # full test suite incl. PostgreSQL integration and end-to-end tests
+make up            # start the stack
+make test          # Go suite incl. PostgreSQL integration and end-to-end tests
+cd web && npm test && npx playwright test   # UI unit and browser tests (stack running)
+make bench         # ingestion benchmarks (stop the stack first)
 make down
 ```
 
@@ -51,6 +81,7 @@ Integration tests create and drop their own databases on the server named by
 
 ## Documentation
 
+* [Architecture and design decisions](docs/architecture.md)
 * [Ingestion, durability, and status codes](docs/ingestion.md)
 * [Configuration](docs/configuration.md)
 * [Demo shop and fault injection](docs/demo.md)
