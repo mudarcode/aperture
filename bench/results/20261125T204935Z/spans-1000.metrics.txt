@@ -1,0 +1,7 @@
+aperture_pipeline_batch_requests_sum 1179
+aperture_pipeline_batch_requests_count 590
+aperture_pipeline_batch_spans_sum 1.179e+06
+aperture_pipeline_batch_spans_count 590
+aperture_pipeline_flush_duration_seconds_sum 99.87808310000008
+aperture_pipeline_flush_duration_seconds_count 590
+aperture_pipeline_overload_rejections_total 0

@@ -1,0 +1,44 @@
+{
+  "label": "small-nobatch",
+  "config": {
+    "URL": "http://127.0.0.1:8090",
+    "Clients": 32,
+    "Duration": 20000000000,
+    "Warmup": 5000000000,
+    "SpansPerReq": 10,
+    "SpansPerTrace": 10,
+    "Attributes": 8,
+    "Gzip": true,
+    "DatabaseURL": "",
+    "Label": "small-nobatch",
+    "JSONOut": "bench/results/20261125T204935Z/small-nobatch.json"
+  },
+  "environment": {
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": "4",
+    "loadgenGo": "go1.27.4",
+    "memory": "16473316 kB",
+    "os": "linux/amd64",
+    "postgres": "18.7"
+  },
+  "elapsedSeconds": 20.004135327,
+  "requests": 17363,
+  "ackedRequests": 17363,
+  "ackedSpans": 173630,
+  "statusCounts": {
+    "200": 17363
+  },
+  "transportErrors": 0,
+  "spansPerSecond": 8679.705329010045,
+  "requestsPerSecond": 867.9705329010045,
+  "ackLatencyMs": {
+    "max": 83.11,
+    "p50": 23.25,
+    "p90": 40.65,
+    "p95": 45.09,
+    "p99": 54.87
+  },
+  "requestBytesOnWire": 617,
+  "storedSpans": 215360,
+  "durabilityCheck": "pass: 215360 acknowledged spans, 215360 stored"
+}

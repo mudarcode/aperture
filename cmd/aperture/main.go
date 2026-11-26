@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -85,6 +86,21 @@ func run(cmd string) error {
 		WriteTimeout: cfg.Handler.AckTimeout + 10*time.Second,
 		IdleTimeout:  120 * time.Second,
 		ErrorLog:     slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
+
+	if cfg.PprofAddr != "" {
+		// Opt-in profiling on a separate listener (keep it on localhost).
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		go func() {
+			log.Info("pprof listening", "addr", cfg.PprofAddr)
+			if err := http.ListenAndServe(cfg.PprofAddr, pprofMux); err != nil {
+				log.Error("pprof listener", "err", err)
+			}
+		}()
 	}
 
 	errCh := make(chan error, 1)

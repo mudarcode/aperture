@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -257,5 +258,43 @@ func assertJSON(t *testing.T, got []byte, want string) {
 	wb, _ := json.Marshal(w)
 	if string(gb) != string(wb) {
 		t.Errorf("JSON mismatch\n got: %s\nwant: %s", gb, wb)
+	}
+}
+
+// The streaming encoder must agree with encoding/json on every string.
+func TestAppendJSONStringMatchesEncodingJSON(t *testing.T) {
+	cases := []string{"", "plain", `q"uote`, `back\slash`, "tab\tnew\nline\r", "\x00\x01\x1f\x7f",
+		"héllo 世界 🎉", "line sep para", "</script>&<>"}
+	for _, s := range cases {
+		got := appendJSONString(nil, s)
+		var back string
+		if err := json.Unmarshal(got, &back); err != nil {
+			t.Fatalf("%q: invalid JSON %s: %v", s, got, err)
+		}
+		if back != s {
+			t.Errorf("%q round-tripped to %q", s, back)
+		}
+	}
+}
+
+func FuzzAppendJSONString(f *testing.F) {
+	f.Add("a\"b\\c\n ")
+	f.Fuzz(func(t *testing.T, s string) {
+		if !utf8.ValidString(s) {
+			t.Skip() // protobuf rejects invalid UTF-8 before we see it
+		}
+		var back string
+		if err := json.Unmarshal(appendJSONString(nil, s), &back); err != nil || back != s {
+			t.Fatalf("%q: got %q, err %v", s, back, err)
+		}
+	})
+}
+
+func TestAppendJSONFloatIsValidJSON(t *testing.T) {
+	for _, f := range []float64{0, -0.0, 1, -1.5, 1e-7, 123456789, 1e21, 1e300, 5e-324, math.MaxFloat64} {
+		var back float64
+		if err := json.Unmarshal(appendJSONFloat(nil, f), &back); err != nil || back != f {
+			t.Errorf("%v: got %v, err %v (%s)", f, back, err, appendJSONFloat(nil, f))
+		}
 	}
 }

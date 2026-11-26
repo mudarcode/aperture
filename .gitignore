@@ -1,4 +1,5 @@
 /bin/
+/bench/results/*/*.log
 *.test
 *.out
 coverage.*

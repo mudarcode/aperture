@@ -3,12 +3,14 @@ package otlpingest
 
 import (
 	"encoding/base64"
-	"encoding/json"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -162,20 +164,20 @@ func (c *Converter) resource(attrs []*commonpb.KeyValue) ([]byte, string, *spanE
 	if len(attrs) > c.Limits.MaxResourceAttributes {
 		return nil, "", &spanError{ReasonLimitExceeded}
 	}
-	m, err := c.attrMap(attrs)
+	b, err := c.appendAttrs(nil, attrs, 0)
 	if err != nil {
 		return nil, "", err
 	}
 	service := UnknownServiceName
-	if v, ok := m["service.name"].(string); ok && v != "" {
-		service = v
+	for _, kv := range attrs { // last occurrence wins, as in the stored JSON
+		if kv.GetKey() == "service.name" {
+			if v := kv.GetValue().GetStringValue(); v != "" {
+				service = v
+			}
+		}
 	}
 	if len(service) > c.Limits.MaxNameBytes {
 		return nil, "", &spanError{ReasonLimitExceeded}
-	}
-	b, jerr := json.Marshal(m)
-	if jerr != nil { // unreachable: attrMap only produces JSON-safe values
-		return nil, "", &spanError{ReasonInvalidString}
 	}
 	return b, service, nil
 }
@@ -240,59 +242,61 @@ func (c *Converter) span(sp *tracepb.Span, maxEnd uint64) (model.Span, *spanErro
 		return s, &spanError{ReasonLimitExceeded}
 	}
 
-	attrs, err := c.attrMap(sp.GetAttributes())
-	if err != nil {
+	// Attribute, event, and link JSON is written directly into byte buffers
+	// rather than via map[string]any + encoding/json: profiling showed the
+	// reflection-based path was the largest CPU cost in ingestion.
+	var err *spanError
+	if s.Attributes, err = c.appendAttrs(make([]byte, 0, 64*len(sp.GetAttributes())+2), sp.GetAttributes(), 0); err != nil {
 		return s, err
 	}
 
-	events := make([]map[string]any, 0, len(sp.GetEvents()))
-	for _, ev := range sp.GetEvents() {
-		if len(ev.GetAttributes()) > c.Limits.MaxAttributesPerSpan {
+	ev := make([]byte, 0, 64)
+	ev = append(ev, '[')
+	for i, e := range sp.GetEvents() {
+		if len(e.GetAttributes()) > c.Limits.MaxAttributesPerSpan {
 			return s, &spanError{ReasonLimitExceeded}
 		}
-		ea, err := c.attrMap(ev.GetAttributes())
-		if err != nil {
-			return s, err
-		}
-		if hasNUL(ev.GetName()) {
+		if hasNUL(e.GetName()) {
 			return s, &spanError{ReasonInvalidString}
 		}
-		events = append(events, map[string]any{
-			"name":           ev.GetName(),
-			"time_unix_nano": ev.GetTimeUnixNano(),
-			"attributes":     ea,
-		})
+		if i > 0 {
+			ev = append(ev, ',')
+		}
+		ev = append(ev, `{"name":`...)
+		ev = appendJSONString(ev, e.GetName())
+		ev = append(ev, `,"time_unix_nano":`...)
+		ev = strconv.AppendUint(ev, e.GetTimeUnixNano(), 10)
+		ev = append(ev, `,"attributes":`...)
+		if ev, err = c.appendAttrs(ev, e.GetAttributes(), 0); err != nil {
+			return s, err
+		}
+		ev = append(ev, '}')
 	}
+	s.Events = append(ev, ']')
 
-	links := make([]map[string]any, 0, len(sp.GetLinks()))
-	for _, l := range sp.GetLinks() {
+	lk := make([]byte, 0, 16)
+	lk = append(lk, '[')
+	for i, l := range sp.GetLinks() {
 		if len(l.GetTraceId()) != 16 || len(l.GetSpanId()) != 8 {
 			return s, &spanError{ReasonInvalidParentID}
 		}
 		if len(l.GetAttributes()) > c.Limits.MaxAttributesPerSpan {
 			return s, &spanError{ReasonLimitExceeded}
 		}
-		la, err := c.attrMap(l.GetAttributes())
-		if err != nil {
+		if i > 0 {
+			lk = append(lk, ',')
+		}
+		lk = append(lk, `{"trace_id":"`...)
+		lk = hex.AppendEncode(lk, l.GetTraceId())
+		lk = append(lk, `","span_id":"`...)
+		lk = hex.AppendEncode(lk, l.GetSpanId())
+		lk = append(lk, `","attributes":`...)
+		if lk, err = c.appendAttrs(lk, l.GetAttributes(), 0); err != nil {
 			return s, err
 		}
-		links = append(links, map[string]any{
-			"trace_id":   fmt.Sprintf("%x", l.GetTraceId()),
-			"span_id":    fmt.Sprintf("%x", l.GetSpanId()),
-			"attributes": la,
-		})
+		lk = append(lk, '}')
 	}
-
-	var jerr error
-	if s.Attributes, jerr = json.Marshal(attrs); jerr != nil {
-		return s, &spanError{ReasonInvalidString}
-	}
-	if s.Events, jerr = json.Marshal(events); jerr != nil {
-		return s, &spanError{ReasonInvalidString}
-	}
-	if s.Links, jerr = json.Marshal(links); jerr != nil {
-		return s, &spanError{ReasonInvalidString}
-	}
+	s.Links = append(lk, ']')
 
 	s.DroppedAttributesCount = sp.GetDroppedAttributesCount()
 	s.DroppedEventsCount = sp.GetDroppedEventsCount()
@@ -300,32 +304,50 @@ func (c *Converter) span(sp *tracepb.Span, maxEnd uint64) (model.Span, *spanErro
 	return s, nil
 }
 
-// attrMap converts OTLP key/values to a JSON-safe map. Later duplicate keys
-// win, matching how most backends resolve duplicates.
-func (c *Converter) attrMap(kvs []*commonpb.KeyValue) (map[string]any, *spanError) {
-	m := make(map[string]any, len(kvs))
-	for _, kv := range kvs {
-		if hasNUL(kv.GetKey()) {
+// appendAttrs appends kvs as a JSON object. When a key repeats, only its
+// last occurrence is written ("last wins", which is also what PostgreSQL
+// jsonb would keep).
+func (c *Converter) appendAttrs(dst []byte, kvs []*commonpb.KeyValue, depth int) ([]byte, *spanError) {
+	dst = append(dst, '{')
+	first := true
+	for i, kv := range kvs {
+		key := kv.GetKey()
+		if hasNUL(key) {
 			return nil, &spanError{ReasonInvalidString}
 		}
-		v, err := c.anyValue(kv.GetValue(), 0)
-		if err != nil {
+		if supersededLater(kvs, i, key) {
+			continue
+		}
+		if !first {
+			dst = append(dst, ',')
+		}
+		first = false
+		dst = appendJSONString(dst, key)
+		dst = append(dst, ':')
+		var err *spanError
+		if dst, err = c.appendValue(dst, kv.GetValue(), depth); err != nil {
 			return nil, err
 		}
-		m[kv.GetKey()] = v
 	}
-	return m, nil
+	return append(dst, '}'), nil
+}
+
+func supersededLater(kvs []*commonpb.KeyValue, i int, key string) bool {
+	for _, later := range kvs[i+1:] {
+		if later.GetKey() == key {
+			return true
+		}
+	}
+	return false
 }
 
 const maxValueDepth = 8
 
-func (c *Converter) anyValue(v *commonpb.AnyValue, depth int) (any, *spanError) {
+func (c *Converter) appendValue(dst []byte, v *commonpb.AnyValue, depth int) ([]byte, *spanError) {
 	if depth > maxValueDepth {
 		return nil, &spanError{ReasonLimitExceeded}
 	}
 	switch x := v.GetValue().(type) {
-	case nil:
-		return nil, nil
 	case *commonpb.AnyValue_StringValue:
 		if len(x.StringValue) > c.Limits.MaxAttributeValueBytes {
 			return nil, &spanError{ReasonLimitExceeded}
@@ -333,57 +355,115 @@ func (c *Converter) anyValue(v *commonpb.AnyValue, depth int) (any, *spanError) 
 		if hasNUL(x.StringValue) {
 			return nil, &spanError{ReasonInvalidString}
 		}
-		return x.StringValue, nil
+		return appendJSONString(dst, x.StringValue), nil
 	case *commonpb.AnyValue_BoolValue:
-		return x.BoolValue, nil
+		return strconv.AppendBool(dst, x.BoolValue), nil
 	case *commonpb.AnyValue_IntValue:
-		return x.IntValue, nil
+		return strconv.AppendInt(dst, x.IntValue, 10), nil
 	case *commonpb.AnyValue_DoubleValue:
 		f := x.DoubleValue
 		if math.IsNaN(f) || math.IsInf(f, 0) {
 			// JSON cannot represent these; keep them visible as strings.
-			return fmt.Sprint(f), nil
+			return appendJSONString(dst, fmt.Sprint(f)), nil
 		}
-		return f, nil
+		return appendJSONFloat(dst, f), nil
 	case *commonpb.AnyValue_BytesValue:
 		if len(x.BytesValue) > c.Limits.MaxAttributeValueBytes {
 			return nil, &spanError{ReasonLimitExceeded}
 		}
-		return base64.StdEncoding.EncodeToString(x.BytesValue), nil
+		dst = append(dst, '"')
+		dst = base64.StdEncoding.AppendEncode(dst, x.BytesValue)
+		return append(dst, '"'), nil
 	case *commonpb.AnyValue_ArrayValue:
 		vals := x.ArrayValue.GetValues()
 		if len(vals) > c.Limits.MaxAttributesPerSpan {
 			return nil, &spanError{ReasonLimitExceeded}
 		}
-		out := make([]any, len(vals))
+		dst = append(dst, '[')
 		for i, e := range vals {
-			ev, err := c.anyValue(e, depth+1)
-			if err != nil {
+			if i > 0 {
+				dst = append(dst, ',')
+			}
+			var err *spanError
+			if dst, err = c.appendValue(dst, e, depth+1); err != nil {
 				return nil, err
 			}
-			out[i] = ev
 		}
-		return out, nil
+		return append(dst, ']'), nil
 	case *commonpb.AnyValue_KvlistValue:
 		kvs := x.KvlistValue.GetValues()
 		if len(kvs) > c.Limits.MaxAttributesPerSpan {
 			return nil, &spanError{ReasonLimitExceeded}
 		}
-		out := make(map[string]any, len(kvs))
-		for _, kv := range kvs {
-			if hasNUL(kv.GetKey()) {
-				return nil, &spanError{ReasonInvalidString}
-			}
-			ev, err := c.anyValue(kv.GetValue(), depth+1)
-			if err != nil {
-				return nil, err
-			}
-			out[kv.GetKey()] = ev
-		}
-		return out, nil
-	default:
-		return nil, nil
+		return c.appendAttrs(dst, kvs, depth+1)
+	default: // empty AnyValue
+		return append(dst, "null"...), nil
 	}
+}
+
+// appendJSONFloat formats like encoding/json: shortest representation,
+// exponent form only for very large or small magnitudes.
+func appendJSONFloat(dst []byte, f float64) []byte {
+	abs := math.Abs(f)
+	format := byte('f')
+	if abs != 0 && (abs < 1e-6 || abs >= 1e21) {
+		format = 'e'
+	}
+	return strconv.AppendFloat(dst, f, format, -1, 64)
+}
+
+const hexDigits = "0123456789abcdef"
+
+// appendJSONString appends s as a JSON string literal. Protobuf has already
+// rejected invalid UTF-8, so only quotes, backslashes, and control
+// characters need escaping; U+2028/U+2029 are escaped too so the output is
+// also safe to embed in JavaScript.
+func appendJSONString(dst []byte, s string) []byte {
+	dst = append(dst, '"')
+	start := 0
+	for i := 0; i < len(s); {
+		b := s[i]
+		if b >= 0x20 && b != '"' && b != '\\' && b < 0x80 {
+			i++
+			continue
+		}
+		if b >= 0x80 {
+			r, size := utf8.DecodeRuneInString(s[i:])
+			if r == '\u2028' || r == '\u2029' || r == utf8.RuneError && size == 1 {
+				dst = append(dst, s[start:i]...)
+				if r == utf8.RuneError {
+					dst = append(dst, `\ufffd`...)
+				} else {
+					dst = append(dst, `\u202`...)
+					dst = append(dst, hexDigits[r&0xF])
+				}
+				i += size
+				start = i
+				continue
+			}
+			i += size
+			continue
+		}
+		dst = append(dst, s[start:i]...)
+		switch b {
+		case '"':
+			dst = append(dst, '\\', '"')
+		case '\\':
+			dst = append(dst, '\\', '\\')
+		case '\n':
+			dst = append(dst, '\\', 'n')
+		case '\r':
+			dst = append(dst, '\\', 'r')
+		case '\t':
+			dst = append(dst, '\\', 't')
+		default:
+			dst = append(dst, '\\', 'u', '0', '0', hexDigits[b>>4], hexDigits[b&0xF])
+		}
+		i++
+		start = i
+	}
+	dst = append(dst, s[start:]...)
+	return append(dst, '"')
 }
 
 func allZero(b []byte) bool {

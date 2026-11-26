@@ -1,0 +1,44 @@
+{
+  "label": "spans-1000",
+  "config": {
+    "URL": "http://127.0.0.1:8090",
+    "Clients": 16,
+    "Duration": 20000000000,
+    "Warmup": 5000000000,
+    "SpansPerReq": 1000,
+    "SpansPerTrace": 10,
+    "Attributes": 8,
+    "Gzip": true,
+    "DatabaseURL": "",
+    "Label": "spans-1000",
+    "JSONOut": "bench/results/20261125T205834Z/spans-1000.json"
+  },
+  "environment": {
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": "4",
+    "loadgenGo": "go1.27.4",
+    "memory": "16473316 kB",
+    "os": "linux/amd64",
+    "postgres": "18.7"
+  },
+  "elapsedSeconds": 20.001743472,
+  "requests": 952,
+  "ackedRequests": 952,
+  "ackedSpans": 952000,
+  "statusCounts": {
+    "200": 952
+  },
+  "transportErrors": 0,
+  "spansPerSecond": 47595.85089833213,
+  "requestsPerSecond": 47.595850898332124,
+  "ackLatencyMs": {
+    "max": 657.81,
+    "p50": 319.81,
+    "p90": 419.83,
+    "p95": 471.21,
+    "p99": 576.25
+  },
+  "requestBytesOnWire": 46463,
+  "storedSpans": 1207000,
+  "durabilityCheck": "pass: 1207000 acknowledged spans, 1207000 stored"
+}

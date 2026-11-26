@@ -12,6 +12,7 @@ error that lists every problem found.
 | `APERTURE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `APERTURE_LOG_FORMAT` | `json` | `json` or `text` |
 | `APERTURE_SHUTDOWN_TIMEOUT` | `30s` | upper bound on graceful shutdown |
+| `APERTURE_PPROF_ADDR` | (off) | if set (e.g. `127.0.0.1:6060`), serves Go `net/http/pprof` there; keep it on localhost |
 | **Pipeline** | | |
 | `APERTURE_QUEUE_CAPACITY` | `1024` | queued export requests before shedding load with 503 |
 | `APERTURE_WORKERS` | `4` | concurrent database writers |

@@ -1,6 +1,6 @@
 TEST_DB ?= postgres://aperture:aperture@localhost:5432/aperture?sslmode=disable
 
-.PHONY: build test test-unit up down tracegen fmt lint
+.PHONY: build test test-unit up down tracegen fmt lint bench bench-micro
 
 build:
 	go build -o bin/ ./cmd/...
@@ -26,3 +26,9 @@ fmt:
 lint:
 	test -z "$$(gofmt -l .)"
 	go vet ./...
+
+bench: ## end-to-end ingestion benchmarks; stop the compose stack first (docs/benchmarks.md)
+	bench/run.sh $(or $(DURATION),20s)
+
+bench-micro: ## Go microbenchmarks
+	go test -run '^$$' -bench . -benchmem -count 3 ./internal/...

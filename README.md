@@ -54,6 +54,7 @@ Integration tests create and drop their own databases on the server named by
 * [Ingestion, durability, and status codes](docs/ingestion.md)
 * [Configuration](docs/configuration.md)
 * [Demo shop and fault injection](docs/demo.md)
+* [Benchmarks and profiling](docs/benchmarks.md)
 * [Pinned versions](VERSIONS.md)
 
 ## Local-demo limitations

@@ -1,0 +1,44 @@
+{
+  "label": "workers-4",
+  "config": {
+    "URL": "http://127.0.0.1:8090",
+    "Clients": 16,
+    "Duration": 20000000000,
+    "Warmup": 5000000000,
+    "SpansPerReq": 100,
+    "SpansPerTrace": 10,
+    "Attributes": 8,
+    "Gzip": true,
+    "DatabaseURL": "",
+    "Label": "workers-4",
+    "JSONOut": "bench/results/20261125T205834Z/workers-4.json"
+  },
+  "environment": {
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": "4",
+    "loadgenGo": "go1.27.4",
+    "memory": "16473316 kB",
+    "os": "linux/amd64",
+    "postgres": "18.7"
+  },
+  "elapsedSeconds": 20.000536137,
+  "requests": 3925,
+  "ackedRequests": 3925,
+  "ackedSpans": 392500,
+  "statusCounts": {
+    "200": 3925
+  },
+  "transportErrors": 0,
+  "spansPerSecond": 19624.473929671036,
+  "requestsPerSecond": 196.24473929671038,
+  "ackLatencyMs": {
+    "max": 252.52,
+    "p50": 80.91,
+    "p90": 96.3,
+    "p95": 100.74,
+    "p99": 111.07
+  },
+  "requestBytesOnWire": 4712,
+  "storedSpans": 490200,
+  "durabilityCheck": "pass: 490200 acknowledged spans, 490200 stored"
+}

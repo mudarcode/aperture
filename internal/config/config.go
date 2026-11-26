@@ -21,6 +21,7 @@ type Config struct {
 	LogLevel        string
 	LogFormat       string // "json" or "text"
 	ShutdownTimeout time.Duration
+	PprofAddr       string // empty disables the profiling listener
 
 	Pipeline pipeline.Config
 	Handler  otlpingest.HandlerConfig
@@ -42,6 +43,7 @@ func load(lookup func(string) (string, bool)) (Config, error) {
 		LogLevel:        e.str("APERTURE_LOG_LEVEL", "info"),
 		LogFormat:       e.str("APERTURE_LOG_FORMAT", "json"),
 		ShutdownTimeout: e.dur("APERTURE_SHUTDOWN_TIMEOUT", 30*time.Second),
+		PprofAddr:       e.str("APERTURE_PPROF_ADDR", ""),
 		Pipeline: pipeline.Config{
 			QueueCapacity: e.int("APERTURE_QUEUE_CAPACITY", 1024),
 			Workers:       e.int("APERTURE_WORKERS", 4),

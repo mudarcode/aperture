@@ -1,0 +1,49 @@
+{
+  "label": "overload",
+  "config": {
+    "URL": "http://127.0.0.1:8090",
+    "Clients": 64,
+    "Duration": 20000000000,
+    "Warmup": 5000000000,
+    "SpansPerReq": 100,
+    "SpansPerTrace": 10,
+    "Attributes": 8,
+    "Gzip": true,
+    "DatabaseURL": "",
+    "Label": "overload",
+    "JSONOut": "bench/results/20261125T205834Z/overload.json"
+  },
+  "environment": {
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": "4",
+    "loadgenGo": "go1.27.4",
+    "memory": "16473316 kB",
+    "os": "linux/amd64",
+    "postgres": "18.7"
+  },
+  "elapsedSeconds": 20.004807291,
+  "requests": 16974,
+  "ackedRequests": 3120,
+  "ackedSpans": 312000,
+  "statusCounts": {
+    "200": 3120,
+    "503": 13854
+  },
+  "transportErrors": 0,
+  "spansPerSecond": 15596.251214095239,
+  "requestsPerSecond": 155.96251214095238,
+  "ackLatencyMs": {
+    "max": 342.43,
+    "p50": 123.99,
+    "p90": 233.62,
+    "p95": 250.29,
+    "p99": 300.65
+  },
+  "rejectLatencyMs": {
+    "p50": 4.28,
+    "p99": 26.28
+  },
+  "requestBytesOnWire": 4721,
+  "storedSpans": 393800,
+  "durabilityCheck": "pass: 393800 acknowledged spans, 393800 stored"
+}
