@@ -123,8 +123,6 @@ services:
       DEMO_ROLE: traffic
       GATEWAY_URL: http://gateway:8080
       TRAFFIC_RPS: "5"
-    healthcheck:
-      disable: true
     depends_on:
       gateway:
         condition: service_healthy

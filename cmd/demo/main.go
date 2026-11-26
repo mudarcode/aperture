@@ -84,6 +84,17 @@ func run(role, addr string, log *slog.Logger) error {
 	svc := &service{role: role, faults: faults, client: client, log: log}
 
 	if role == "traffic" {
+		// The traffic generator serves only /healthz so that
+		// `docker compose up --wait` can treat it like every other service.
+		health := http.NewServeMux()
+		health.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+		hs := &http.Server{Addr: addr, Handler: health, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			if err := hs.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				log.Error("health server", "err", err)
+			}
+		}()
+		defer hs.Close()
 		return runTraffic(ctx, svc)
 	}
 
